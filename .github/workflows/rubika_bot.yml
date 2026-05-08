@@ -1,0 +1,29 @@
+name: Rubika Bot 24/7
+
+on:
+  schedule:
+    # Runs at 00:00, 06:00, 12:00, 18:00 UTC every day
+    - cron: '0 */6 * * *'
+  workflow_dispatch:   # allows manual trigger for testing
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360   # max 6 hours per job (GitHub limit)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run bot
+        env:
+          RUBIKA_TOKEN: ${{ secrets.RUBIKA_TOKEN }}   # your bot token stored as a secret
+        run: python bot.py
