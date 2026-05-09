@@ -1,7 +1,6 @@
 import os
 import time
 import requests
-import traceback
 
 # --- Configuration ---
 TOKEN = os.environ.get("RUBIKA_TOKEN", "").strip()
@@ -9,89 +8,101 @@ if not TOKEN:
     print("FATAL: RUBIKA_TOKEN is empty.", flush=True)
     exit(1)
 
-POLL_INTERVAL = 3                 # seconds
-RUN_DURATION = 5 * 3600 + 55 * 60
+POLL_INTERVAL = 3                 # seconds between polls
+RUN_DURATION = 5 * 3600 + 55 * 60 # 5 hours 55 minutes
 
 PROXY_URL = os.environ.get("PROXY_URL")
 proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
 
 BASE = f"https://botapi.rubika.ir/v3/{TOKEN}"
 
-def safe_post(url, json_data=None, retries=1, timeout=10):
-    """Post with retries, returns response or None."""
-    for attempt in range(retries + 1):
+def api_call(method, payload=None):
+    """Send a POST request to the Rubika API. Returns (status_code, json_data_or_text)."""
+    url = f"{BASE}/{method}"
+    for attempt in range(3):  # 3 retries
         try:
-            if json_data is not None:
-                resp = requests.post(url, json=json_data, proxies=proxies, timeout=timeout)
+            resp = requests.post(url, json=payload, proxies=proxies, timeout=10)
+            ct = resp.headers.get("content-type", "")
+            if "application/json" in ct:
+                return resp.status_code, resp.json()
             else:
-                resp = requests.post(url, proxies=proxies, timeout=timeout)
-            return resp  # return even if error, we'll print status
+                return resp.status_code, resp.text
         except Exception as e:
-            print(f"[Attempt {attempt+1}] Exception: {e}", flush=True)
+            if attempt == 2:
+                print(f"[{method}] Exception after retries: {e}", flush=True)
+                return None, str(e)
             time.sleep(2)
-    return None
-
-def get_updates(offset_id=None, limit=10):
-    payload = {"limit": limit}
-    if offset_id is not None:
-        payload["offset_id"] = offset_id
-    resp = safe_post(f"{BASE}/getUpdates", json_data=payload)
-    if resp:
-        return resp.status_code, resp.json() if resp.headers.get("content-type", "").startswith("application/json") else resp.text
-    return None, None
+    return None, "unknown error"
 
 def send_message(chat_id, text):
     payload = {"chat_id": chat_id, "text": text}
-    resp = safe_post(f"{BASE}/sendMessage", json_data=payload, timeout=15)
-    if resp and resp.status_code == 200:
-        print(f"[OK] Echo to {chat_id}: {text}", flush=True)
+    code, data = api_call("sendMessage", payload)
+    if code == 200:
+        print(f"[OK] Echo → {chat_id}: {text}", flush=True)
     else:
-        status = resp.status_code if resp else 'None'
-        print(f"[FAIL] sendMessage status {status}", flush=True)
+        print(f"[FAIL] sendMessage ({code}): {data}", flush=True)
 
 def main():
     start_time = time.time()
-    print(f"Token: {TOKEN[:6]}...{TOKEN[-4:]}", flush=True)
+    print(f"Bot token: {TOKEN[:6]}...{TOKEN[-4:]}", flush=True)
 
-    # Fetch latest offset
-    status, data = get_updates(limit=1)
-    if status == 200 and isinstance(data, dict):
-        next_offset = data.get("next_offset_id")
-        print(f"Initial offset set to: {next_offset}", flush=True)
+    # Test connectivity and get current offset to skip old messages
+    code, info = api_call("getMe")
+    if code == 200 and isinstance(info, dict):
+        bot = info.get("data", {}).get("bot", {})
+        print(f"Bot is alive: {bot.get('bot_title', '?')} (@{bot.get('username', '?')})", flush=True)
     else:
-        print(f"Initial getUpdates failed (status {status})", flush=True)
+        print(f"Warning: getMe failed ({code}), but will continue.", flush=True)
+
+    # Send a startup ping so the user knows the bot is online (use your chat_id)
+    send_message("b0JWE2R0cIy0e6f15e772458eede5497", "Echo bot is online. Reply to me!")
+
+    # Get latest offset to avoid processing old messages
+    code, data = api_call("getUpdates", {"limit": 1})
+    if code == 200 and isinstance(data, dict):
+        inner = data.get("data", {})
+        next_offset = inner.get("next_offset_id")
+        print(f"Starting offset: {next_offset}", flush=True)
+    else:
+        print("Could not fetch initial offset, starting without (may re-echo old messages).", flush=True)
         next_offset = None
 
-    print(f"Polling every {POLL_INTERVAL}s. Send a message now...", flush=True)
+    print("Listening for messages...", flush=True)
 
     while time.time() - start_time < RUN_DURATION:
-        status, data = get_updates(offset_id=next_offset, limit=10)
-        if status == 200 and isinstance(data, dict):
-            updates = data.get("updates", [])
-            new_offset = data.get("next_offset_id")
-            # Always print the status for debugging
-            print(f"[Poll] offset={next_offset} => {len(updates)} updates, next={new_offset}", flush=True)
+        payload = {"limit": 10}
+        if next_offset:
+            payload["offset_id"] = next_offset
+
+        code, data = api_call("getUpdates", payload)
+        if code == 200 and isinstance(data, dict):
+            inner = data.get("data", {})
+            updates = inner.get("updates", [])
+            new_offset = inner.get("next_offset_id")
+
             if updates:
+                print(f"Received {len(updates)} update(s)", flush=True)
                 for upd in updates:
-                    print(f"  Update: {upd.get('type')} from chat {upd.get('chat_id')}", flush=True)
-                    if upd.get("type") == "NewMessage":
-                        msg = upd.get("new_message", {})
-                        txt = msg.get("text", "")
-                        cid = upd.get("chat_id")
-                        stype = msg.get("sender_type", "")
-                        if stype == "User" and txt and cid:
-                            send_message(cid, txt)
+                    if upd.get("type") != "NewMessage":
+                        continue
+                    msg = upd.get("new_message", {})
+                    if msg.get("sender_type") != "User":
+                        continue
+                    text = msg.get("text", "")
+                    chat_id = upd.get("chat_id")
+                    if text and chat_id:
+                        send_message(chat_id, text)
+
             if new_offset:
                 next_offset = new_offset
         else:
-            print(f"[Poll] getUpdates error: status={status}, data={str(data)[:200]}", flush=True)
+            print(f"[Poll] getUpdates error: {code} {data}", flush=True)
             time.sleep(5)
             continue
 
         elapsed = time.time() - start_time
-        if elapsed >= RUN_DURATION:
-            break
-        time.sleep(POLL_INTERVAL)
+        sleep_time = min(POLL_INTERVAL, max(0, RUN_DURATION - elapsed))
+        time.sleep(sleep_time)
 
     print("Time limit reached. Exiting.", flush=True)
 
