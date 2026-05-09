@@ -3,49 +3,67 @@ import time
 import requests
 
 # --- Configuration ---
-TOKEN = os.environ["RUBIKA_TOKEN"]
-USER_GUID = "u0JWE2R02172d15a02bb742a785ac9f8"    # <-- change this to the real GUID
+TOKEN = os.environ["RUBIKA_TOKEN"]                          # bot token
+USER_GUID = "u0JWE2R02172d15a02bb742a785ac9f8"              # hardcoded GUID (your target user)
 MESSAGE = "Bot is alive"
-SEND_INTERVAL = 5 * 60                    # 5 minutes in seconds
-RUN_DURATION = 5 * 3600 + 55 * 60         # 5 hours 55 minutes
+SEND_INTERVAL = 5 * 60                                      # 5 minutes
+RUN_DURATION = 5 * 3600 + 55 * 60                           # 5h 55m
+
+# Optional HTTP/HTTPS proxy for geo‑blocked environments
+PROXY_URL = os.environ.get("PROXY_URL")
+proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
 # ---------------------
 
-def send_message(token: str, chat_id: str, text: str) -> None:
-    url = "https://messengerg2b1.iranlms.ir/sendMessage"
+def send_message(text: str) -> bool:
+    """Send a plain text message to USER_GUID using the Rubika Bot API."""
+    url = f"https://botapi.rubika.ir/v3/{TOKEN}/sendMessage"
     payload = {
-        "token": token,
-        "object_guid": chat_id,
-        "text": text,
+        "chat_id": USER_GUID,
+        "text": text
     }
     try:
-        resp = requests.post(url, data=payload, timeout=10)
+        resp = requests.post(url, json=payload, proxies=proxies, timeout=15)
         if resp.status_code == 200:
             print(f"[OK] Message sent: {text}", flush=True)
+            return True
         else:
-            print(f"[FAIL] Status {resp.status_code}: {resp.text}", flush=True)
+            print(f"[FAIL] HTTP {resp.status_code}: {resp.text}", flush=True)
+            return False
     except Exception as e:
-        print(f"[ERROR] Exception while sending: {e}", flush=True)
+        print(f"[ERROR] {e}", flush=True)
+        return False
+
+def test_connectivity():
+    """Quick check: call getMe to verify token and reachability."""
+    url = f"https://botapi.rubika.ir/v3/{TOKEN}/getMe"
+    try:
+        resp = requests.post(url, proxies=proxies, timeout=10)
+        if resp.status_code == 200:
+            print(f"[INFO] Token is valid! Bot: {resp.json().get('bot', {}).get('bot_title', 'unknown')}", flush=True)
+            return True
+        else:
+            print(f"[INFO] getMe returned {resp.status_code}: {resp.text}", flush=True)
+            return False
+    except Exception as e:
+        print(f"[INFO] getMe failed: {e}", flush=True)
+        return False
 
 def main():
     start = time.time()
     iteration = 0
+    print("Bot started. Using official Rubika bot API.", flush=True)
+    if proxies:
+        print(f"Using proxy: {PROXY_URL}", flush=True)
 
-    print("Bot started. Will run for 5h 55m, sending a message every 5 minutes.", flush=True)
-    print(f"Target GUID: {USER_GUID}", flush=True)   # helpful for debugging
-
-    # Quick connectivity test at the very start
-    print("Testing connectivity to Rubika API...", flush=True)
-    try:
-        test = requests.get("https://messengerg2b1.iranlms.ir/", timeout=5)
-        print(f"API reachable, status {test.status_code}", flush=True)
-    except Exception as e:
-        print(f"API unreachable: {e}", flush=True)
+    # Test token/connectivity once at startup
+    if not test_connectivity():
+        print("[WARN] Connectivity test failed. Will still try to send messages, but check your token/GUID/proxy.", flush=True)
 
     while time.time() - start < RUN_DURATION:
         iteration += 1
         elapsed = time.time() - start
         print(f"Iteration {iteration} at {time.strftime('%H:%M:%S')} (elapsed {int(elapsed)}s)", flush=True)
-        send_message(TOKEN, USER_GUID, MESSAGE)
+        send_message(MESSAGE)
 
         remaining = RUN_DURATION - elapsed
         if remaining <= 0:
