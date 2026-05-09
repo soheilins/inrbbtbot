@@ -3,15 +3,14 @@ import time
 import requests
 
 # --- Configuration ---
-TOKEN = os.environ["RUBIKA_TOKEN"]            # from GitHub secret
-USER_GUID = "u0JWE2R02172d15a02bb742a785ac9f8"        # replace with the recipient's object_guid
-MESSAGE = "Bot is alive"                      # text to send
-SEND_INTERVAL = 5 * 1                        # 5 minutes in seconds
-RUN_DURATION = 5 * 3600 + 55 * 60             # 5 hours 55 minutes (21300 seconds)
+TOKEN = os.environ["RUBIKA_TOKEN"]
+USER_GUID = "YOUR_HARDCODED_USER_GUID"    # <-- change this to the real GUID
+MESSAGE = "Bot is alive"
+SEND_INTERVAL = 5 * 60                    # 5 minutes in seconds
+RUN_DURATION = 5 * 3600 + 55 * 60         # 5 hours 55 minutes
 # ---------------------
 
 def send_message(token: str, chat_id: str, text: str) -> None:
-    """Send a text message via Rubika Bot API."""
     url = "https://messengerg2b1.iranlms.ir/sendMessage"
     payload = {
         "token": token,
@@ -21,31 +20,41 @@ def send_message(token: str, chat_id: str, text: str) -> None:
     try:
         resp = requests.post(url, data=payload, timeout=10)
         if resp.status_code == 200:
-            print(f"[OK] Message sent: {text}")
+            print(f"[OK] Message sent: {text}", flush=True)
         else:
-            print(f"[FAIL] Status {resp.status_code}: {resp.text}")
+            print(f"[FAIL] Status {resp.status_code}: {resp.text}", flush=True)
     except Exception as e:
-        print(f"[ERROR] Exception while sending: {e}")
+        print(f"[ERROR] Exception while sending: {e}", flush=True)
 
 def main():
     start = time.time()
     iteration = 0
 
-    print("Bot started. Will run for 5h 55m, sending a message every 5 minutes.")
+    print("Bot started. Will run for 5h 55m, sending a message every 5 minutes.", flush=True)
+    print(f"Target GUID: {USER_GUID}", flush=True)   # helpful for debugging
+
+    # Quick connectivity test at the very start
+    print("Testing connectivity to Rubika API...", flush=True)
+    try:
+        test = requests.get("https://messengerg2b1.iranlms.ir/", timeout=5)
+        print(f"API reachable, status {test.status_code}", flush=True)
+    except Exception as e:
+        print(f"API unreachable: {e}", flush=True)
+
     while time.time() - start < RUN_DURATION:
         iteration += 1
-        print(f"Iteration {iteration} at {time.strftime('%H:%M:%S')}")
+        elapsed = time.time() - start
+        print(f"Iteration {iteration} at {time.strftime('%H:%M:%S')} (elapsed {int(elapsed)}s)", flush=True)
         send_message(TOKEN, USER_GUID, MESSAGE)
 
-        # Sleep, but account for the time already spent in this iteration
-        elapsed = time.time() - start
-        remaining_in_loop = RUN_DURATION - elapsed
-        if remaining_in_loop <= 0:
+        remaining = RUN_DURATION - elapsed
+        if remaining <= 0:
             break
-        sleep_time = min(SEND_INTERVAL, remaining_in_loop)
-        time.sleep(sleep_time)
+        sleep_for = min(SEND_INTERVAL, remaining)
+        print(f"Sleeping for {int(sleep_for)} seconds...", flush=True)
+        time.sleep(sleep_for)
 
-    print(f"Time limit reached ({RUN_DURATION}s). Exiting cleanly.")
+    print("Time limit reached. Exiting cleanly.", flush=True)
 
 if __name__ == "__main__":
     main()
