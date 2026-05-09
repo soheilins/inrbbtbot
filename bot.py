@@ -16,7 +16,7 @@ OFFSET_FILE = "offset.txt"
 ENC_OFFSET_FILE = "enc_offset.txt"
 RANDOM_HEX_FILE = "random.txt"
 
-MAGIC_PREFIX = "Ovagarava"
+MAGIC_PREFIX = "ovagarava"
 
 PROXY_URL = os.environ.get("PROXY_URL")
 proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
