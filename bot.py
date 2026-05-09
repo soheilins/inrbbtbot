@@ -2,6 +2,7 @@ import os
 import time
 import requests
 import secrets
+import subprocess
 
 # --- Configuration ---
 TOKEN = os.environ.get("RUBIKA_TOKEN", "").strip()
@@ -10,13 +11,14 @@ if not TOKEN:
     exit(1)
 
 POLL_INTERVAL = 3                 # seconds between polls
-RUN_DURATION = 5 * 3600 + 55 * 60 # 5h 55m
+RUN_DURATION = 5 * 3600 + 55 * 60 # 5h 55m (but we commit before the end)
+COMMIT_INTERVAL = 20 * 60         # 20 minutes
 
 OFFSET_FILE = "offset.txt"
 ENC_OFFSET_FILE = "enc_offset.txt"
 RANDOM_HEX_FILE = "random.txt"
 
-MAGIC_PREFIX = "ovagarava"
+MAGIC_PREFIX = "Ovagarava"
 
 PROXY_URL = os.environ.get("PROXY_URL")
 proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
@@ -27,9 +29,29 @@ BASE = f"https://botapi.rubika.ir/v3/{TOKEN}"
 B32_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUV"
 B32_BASE = len(B32_ALPHABET)
 
-# Fixed header lengths
 OFFSET_B32_LEN = 8
 LEN_B32_LEN = 3
+
+# --- Git setup ---
+def setup_git():
+    """Configure git user for this repository."""
+    subprocess.run(["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"], check=False)
+    subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=False)
+
+def git_commit_and_push():
+    """Add, commit and push the offset files."""
+    try:
+        subprocess.run(["git", "add", OFFSET_FILE, ENC_OFFSET_FILE], check=True, capture_output=True)
+        # Check if there's something to commit
+        result = subprocess.run(["git", "diff", "--staged", "--quiet"], capture_output=True)
+        if result.returncode == 0:
+            # No changes
+            return
+        subprocess.run(["git", "commit", "-m", "Auto-save offsets"], check=True)
+        subprocess.run(["git", "push"], check=True)
+        print("[GIT] Offsets committed and pushed.", flush=True)
+    except Exception as e:
+        print(f"[GIT] Error during commit/push: {e}", flush=True)
 
 # --- Helpers ---
 
@@ -143,7 +165,12 @@ def decrypt(encrypted, random_hex):
 
 def main():
     start_time = time.time()
+    last_commit_time = start_time
+
     print("Bot starting.", flush=True)
+
+    # Setup git
+    setup_git()
 
     # Token check
     code, info = api_call("getMe")
@@ -180,7 +207,7 @@ def main():
 
     print(f"API offset: {next_offset_str}, enc offset: {enc_offset}", flush=True)
 
-    # No startup message – bot remains silent
+    # No startup message
 
     try:
         while time.time() - start_time < RUN_DURATION:
@@ -208,11 +235,10 @@ def main():
                             continue
 
                         if text.startswith(MAGIC_PREFIX):
-                            # === DECRYPT ===
+                            # Decrypt
                             try:
                                 decrypted = decrypt(text, random_hex)
                                 if decrypted is not None:
-                                    # Send only the original message, no "Decrypted:" label
                                     send_message(chat_id, decrypted)
                                 else:
                                     send_message(chat_id, "❌ Invalid ciphertext.")
@@ -220,7 +246,7 @@ def main():
                                 print(f"Decryption error: {e}", flush=True)
                                 send_message(chat_id, "⚠️ Decryption failed.")
                         else:
-                            # === ENCRYPT ===
+                            # Encrypt
                             try:
                                 encrypted, enc_offset = encrypt(text, random_hex, enc_offset)
                                 send_message(chat_id, encrypted)
@@ -229,11 +255,18 @@ def main():
                                 print(f"Encryption error: {e}", flush=True)
                                 send_message(chat_id, "⚠️ Encryption failed.")
 
-                # Save API offset after every poll
+                # Save update offset immediately after poll
                 if new_offset_str:
                     next_offset_str = new_offset_str
                     with open(OFFSET_FILE, "w") as f:
                         f.write(next_offset_str)
+
+                # Periodic Git push every COMMIT_INTERVAL seconds
+                now = time.time()
+                if now - last_commit_time >= COMMIT_INTERVAL:
+                    git_commit_and_push()
+                    last_commit_time = now
+
             else:
                 print(f"[Poll] getUpdates error: {code} {data}", flush=True)
                 time.sleep(5)
@@ -243,9 +276,11 @@ def main():
             sleep_time = max(0, min(POLL_INTERVAL, RUN_DURATION - elapsed))
             time.sleep(sleep_time)
     finally:
+        # Final save + push
         with open(OFFSET_FILE, "w") as f:
             f.write(next_offset_str or "")
         write_int_to_file(ENC_OFFSET_FILE, enc_offset)
+        git_commit_and_push()
         print("Bot shutting down.", flush=True)
 
 if __name__ == "__main__":
