@@ -4,7 +4,7 @@ import requests
 
 # --- Configuration ---
 TOKEN = os.environ["RUBIKA_TOKEN"]                          # bot token
-USER_GUID = "u0JWE2R02172d15a02bb742a785ac9f8"              # hardcoded GUID (your target user)
+USER_GUID = "b0JWE2R0cIy0e6f15e772458eede5497"              # hardcoded GUID (your target user)
 MESSAGE = "Bot is alive"
 SEND_INTERVAL = 5 * 60                                      # 5 minutes
 RUN_DURATION = 5 * 3600 + 55 * 60                           # 5h 55m
