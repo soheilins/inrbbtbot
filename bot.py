@@ -16,8 +16,7 @@ OFFSET_FILE = "offset.txt"
 ENC_OFFSET_FILE = "enc_offset.txt"
 RANDOM_HEX_FILE = "random.txt"
 
-# Magic word for decryption – change to any unique string you like
-MAGIC_PREFIX = "Ovagarava"
+MAGIC_PREFIX = "ovagarava"
 
 PROXY_URL = os.environ.get("PROXY_URL")
 proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
@@ -98,7 +97,7 @@ def text_to_hex(text):
 def hex_to_text(hex_str):
     return bytes.fromhex(hex_str).decode("utf-8")
 
-# --- Encryption / Decryption with Ovagarava prefix ---
+# --- Encryption / Decryption ---
 
 def encrypt(text, random_hex, enc_offset):
     H = text_to_hex(text)
@@ -157,7 +156,7 @@ def main():
     # Load or create random hex pad
     if not os.path.exists(RANDOM_HEX_FILE) or os.path.getsize(RANDOM_HEX_FILE) == 0:
         print("Creating random.txt...", flush=True)
-        random_hex = secrets.token_hex(500_000)   # 1,000,000 hex chars
+        random_hex = secrets.token_hex(500_000)
         with open(RANDOM_HEX_FILE, "w") as f:
             f.write(random_hex)
         print("random.txt created.", flush=True)
@@ -181,8 +180,7 @@ def main():
 
     print(f"API offset: {next_offset_str}, enc offset: {enc_offset}", flush=True)
 
-    send_message("b0JWE2R0cIy0e6f15e772458eede5497",
-                 f"Bot online. Magic word for decryption: {MAGIC_PREFIX}")
+    # No startup message sent to the user – bot stays silent.
 
     try:
         while time.time() - start_time < RUN_DURATION:
@@ -209,9 +207,8 @@ def main():
                         if not text or not chat_id:
                             continue
 
-                        # Decision: does the message start with Ovagarava?
                         if text.startswith(MAGIC_PREFIX):
-                            # Try decryption
+                            # Decryption
                             try:
                                 decrypted = decrypt(text, random_hex)
                                 if decrypted is not None:
@@ -222,7 +219,7 @@ def main():
                                 print(f"Decryption error: {e}", flush=True)
                                 send_message(chat_id, "⚠️ Decryption failed.")
                         else:
-                            # Encrypt plaintext
+                            # Encryption
                             try:
                                 encrypted, enc_offset = encrypt(text, random_hex, enc_offset)
                                 send_message(chat_id, encrypted)
