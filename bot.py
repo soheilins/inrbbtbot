@@ -10,6 +10,7 @@ if not TOKEN:
 
 POLL_INTERVAL = 3                 # seconds between polls
 RUN_DURATION = 5 * 3600 + 55 * 60 # 5 hours 55 minutes
+OFFSET_FILE = "offset.txt"        # file to store the last offset
 
 PROXY_URL = os.environ.get("PROXY_URL")
 proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
@@ -17,9 +18,9 @@ proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
 BASE = f"https://botapi.rubika.ir/v3/{TOKEN}"
 
 def api_call(method, payload=None):
-    """Send a POST request to the Rubika API. Returns (status_code, json_data_or_text)."""
+    """Send a POST request. Returns (status_code, json_data_or_text)."""
     url = f"{BASE}/{method}"
-    for attempt in range(3):  # 3 retries
+    for attempt in range(3):
         try:
             resp = requests.post(url, json=payload, proxies=proxies, timeout=10)
             ct = resp.headers.get("content-type", "")
@@ -29,82 +30,110 @@ def api_call(method, payload=None):
                 return resp.status_code, resp.text
         except Exception as e:
             if attempt == 2:
-                print(f"[{method}] Exception after retries: {e}", flush=True)
+                print(f"[{method}] Exception: {e}", flush=True)
                 return None, str(e)
             time.sleep(2)
-    return None, "unknown error"
+    return None, "unknown"
 
 def send_message(chat_id, text):
-    payload = {"chat_id": chat_id, "text": text}
-    code, data = api_call("sendMessage", payload)
+    code, _ = api_call("sendMessage", {"chat_id": chat_id, "text": text})
     if code == 200:
         print(f"[OK] Echo → {chat_id}: {text}", flush=True)
     else:
-        print(f"[FAIL] sendMessage ({code}): {data}", flush=True)
+        print(f"[FAIL] sendMessage {code}", flush=True)
+
+def read_offset():
+    """Read the saved offset from file. Returns None if not found."""
+    try:
+        if os.path.exists(OFFSET_FILE):
+            with open(OFFSET_FILE, "r") as f:
+                offset = f.read().strip()
+                if offset:
+                    print(f"Loaded saved offset: {offset}", flush=True)
+                    return offset
+    except Exception as e:
+        print(f"Error reading offset file: {e}", flush=True)
+    return None
+
+def write_offset(offset):
+    """Write offset to file."""
+    try:
+        with open(OFFSET_FILE, "w") as f:
+            f.write(offset)
+        print(f"Offset saved: {offset}", flush=True)
+    except Exception as e:
+        print(f"Error writing offset file: {e}", flush=True)
 
 def main():
     start_time = time.time()
     print(f"Bot token: {TOKEN[:6]}...{TOKEN[-4:]}", flush=True)
 
-    # Test connectivity and get current offset to skip old messages
+    # Check connectivity
     code, info = api_call("getMe")
     if code == 200 and isinstance(info, dict):
         bot = info.get("data", {}).get("bot", {})
-        print(f"Bot is alive: {bot.get('bot_title', '?')} (@{bot.get('username', '?')})", flush=True)
+        print(f"Bot alive: {bot.get('bot_title', '?')} (@{bot.get('username', '?')})", flush=True)
     else:
-        print(f"Warning: getMe failed ({code}), but will continue.", flush=True)
+        print("Warning: getMe failed, continuing.", flush=True)
 
-    # Send a startup ping so the user knows the bot is online (use your chat_id)
+    # Send startup ping
     send_message("b0JWE2R0cIy0e6f15e772458eede5497", "Echo bot is online. Reply to me!")
 
-    # Get latest offset to avoid processing old messages
-    code, data = api_call("getUpdates", {"limit": 1})
-    if code == 200 and isinstance(data, dict):
-        inner = data.get("data", {})
-        next_offset = inner.get("next_offset_id")
-        print(f"Starting offset: {next_offset}", flush=True)
-    else:
-        print("Could not fetch initial offset, starting without (may re-echo old messages).", flush=True)
-        next_offset = None
-
-    print("Listening for messages...", flush=True)
-
-    while time.time() - start_time < RUN_DURATION:
-        payload = {"limit": 10}
-        if next_offset:
-            payload["offset_id"] = next_offset
-
-        code, data = api_call("getUpdates", payload)
+    # Load previous offset, or fetch latest if none
+    next_offset = read_offset()
+    if not next_offset:
+        code, data = api_call("getUpdates", {"limit": 1})
         if code == 200 and isinstance(data, dict):
-            inner = data.get("data", {})
-            updates = inner.get("updates", [])
-            new_offset = inner.get("next_offset_id")
-
-            if updates:
-                print(f"Received {len(updates)} update(s)", flush=True)
-                for upd in updates:
-                    if upd.get("type") != "NewMessage":
-                        continue
-                    msg = upd.get("new_message", {})
-                    if msg.get("sender_type") != "User":
-                        continue
-                    text = msg.get("text", "")
-                    chat_id = upd.get("chat_id")
-                    if text and chat_id:
-                        send_message(chat_id, text)
-
-            if new_offset:
-                next_offset = new_offset
+            next_offset = data.get("data", {}).get("next_offset_id")
+            print(f"No saved offset. Starting from: {next_offset}", flush=True)
         else:
-            print(f"[Poll] getUpdates error: {code} {data}", flush=True)
-            time.sleep(5)
-            continue
+            print("Could not get initial offset, starting without.", flush=True)
+            next_offset = None
 
-        elapsed = time.time() - start_time
-        sleep_time = min(POLL_INTERVAL, max(0, RUN_DURATION - elapsed))
-        time.sleep(sleep_time)
+    print("Polling for messages...", flush=True)
 
-    print("Time limit reached. Exiting.", flush=True)
+    try:
+        while time.time() - start_time < RUN_DURATION:
+            payload = {"limit": 10}
+            if next_offset:
+                payload["offset_id"] = next_offset
+
+            code, data = api_call("getUpdates", payload)
+            if code == 200 and isinstance(data, dict):
+                inner = data.get("data", {})
+                updates = inner.get("updates", [])
+                new_offset = inner.get("next_offset_id")
+
+                if updates:
+                    print(f"Received {len(updates)} update(s)", flush=True)
+                    for upd in updates:
+                        if upd.get("type") != "NewMessage":
+                            continue
+                        msg = upd.get("new_message", {})
+                        if msg.get("sender_type") != "User":
+                            continue
+                        text = msg.get("text", "")
+                        chat_id = upd.get("chat_id")
+                        if text and chat_id:
+                            send_message(chat_id, text)
+
+                if new_offset:
+                    next_offset = new_offset
+                    # Save periodically to reduce risk of data loss
+                    # (We'll also save at exit)
+            else:
+                print(f"[Poll] getUpdates error: {code} {data}", flush=True)
+                time.sleep(5)
+                continue
+
+            elapsed = time.time() - start_time
+            sleep_time = max(0, min(POLL_INTERVAL, RUN_DURATION - elapsed))
+            time.sleep(sleep_time)
+    finally:
+        # Always save the offset before exiting (even on error)
+        if next_offset:
+            write_offset(next_offset)
+        print("Bot shutting down.", flush=True)
 
 if __name__ == "__main__":
     main()
