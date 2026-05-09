@@ -16,7 +16,7 @@ OFFSET_FILE = "offset.txt"
 ENC_OFFSET_FILE = "enc_offset.txt"
 RANDOM_HEX_FILE = "random.txt"
 
-MAGIC_PREFIX = "ovagarava"
+MAGIC_PREFIX = "Ovagarava"
 
 PROXY_URL = os.environ.get("PROXY_URL")
 proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
@@ -180,7 +180,7 @@ def main():
 
     print(f"API offset: {next_offset_str}, enc offset: {enc_offset}", flush=True)
 
-    # No startup message sent to the user – bot stays silent.
+    # No startup message – bot remains silent
 
     try:
         while time.time() - start_time < RUN_DURATION:
@@ -208,18 +208,19 @@ def main():
                             continue
 
                         if text.startswith(MAGIC_PREFIX):
-                            # Decryption
+                            # === DECRYPT ===
                             try:
                                 decrypted = decrypt(text, random_hex)
                                 if decrypted is not None:
-                                    send_message(chat_id, f"Decrypted: {decrypted}")
+                                    # Send only the original message, no "Decrypted:" label
+                                    send_message(chat_id, decrypted)
                                 else:
                                     send_message(chat_id, "❌ Invalid ciphertext.")
                             except Exception as e:
                                 print(f"Decryption error: {e}", flush=True)
                                 send_message(chat_id, "⚠️ Decryption failed.")
                         else:
-                            # Encryption
+                            # === ENCRYPT ===
                             try:
                                 encrypted, enc_offset = encrypt(text, random_hex, enc_offset)
                                 send_message(chat_id, encrypted)
@@ -228,6 +229,7 @@ def main():
                                 print(f"Encryption error: {e}", flush=True)
                                 send_message(chat_id, "⚠️ Encryption failed.")
 
+                # Save API offset after every poll
                 if new_offset_str:
                     next_offset_str = new_offset_str
                     with open(OFFSET_FILE, "w") as f:
