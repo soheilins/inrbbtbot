@@ -10,13 +10,19 @@ if not TOKEN:
 
 POLL_INTERVAL = 3                 # seconds between polls
 RUN_DURATION = 5 * 3600 + 55 * 60 # 5 hours 55 minutes
-OFFSET_FILE = "offset.txt"        # file to store the last offset
+OFFSET_FILE = "offset.txt"        # persistent offset
 
 PROXY_URL = os.environ.get("PROXY_URL")
 proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
 
 BASE = f"https://botapi.rubika.ir/v3/{TOKEN}"
 
+# Encryption settings – change BASE_OUT to 32 if you prefer base32
+BASE_OUT = 16                     # output base (16 = hex, 32 = Base32)
+# For base32 you may want a custom alphabet; this uses Python's built-in int→string conversion.
+# Add a custom alphabet if desired.
+
+# --- Helper functions ---
 def api_call(method, payload=None):
     """Send a POST request. Returns (status_code, json_data_or_text)."""
     url = f"{BASE}/{method}"
@@ -38,31 +44,62 @@ def api_call(method, payload=None):
 def send_message(chat_id, text):
     code, _ = api_call("sendMessage", {"chat_id": chat_id, "text": text})
     if code == 200:
-        print(f"[OK] Echo → {chat_id}: {text}", flush=True)
+        print(f"[OK] Sent → {chat_id}: {text[:50]}{'...' if len(text)>50 else ''}", flush=True)
     else:
         print(f"[FAIL] sendMessage {code}", flush=True)
 
 def read_offset():
-    """Read the saved offset from file. Returns None if not found."""
     try:
         if os.path.exists(OFFSET_FILE):
             with open(OFFSET_FILE, "r") as f:
                 offset = f.read().strip()
                 if offset:
-                    print(f"Loaded saved offset: {offset}", flush=True)
+                    print(f"Loaded offset: {offset}", flush=True)
                     return offset
     except Exception as e:
-        print(f"Error reading offset file: {e}", flush=True)
+        print(f"Error reading offset: {e}", flush=True)
     return None
 
 def write_offset(offset):
-    """Write offset to file."""
     try:
         with open(OFFSET_FILE, "w") as f:
             f.write(offset)
-        print(f"Offset saved: {offset}", flush=True)
+        # No log here to avoid flooding; only log when changed significantly if needed
     except Exception as e:
-        print(f"Error writing offset file: {e}", flush=True)
+        print(f"Error writing offset: {e}", flush=True)
+
+def text_to_binary_string(text: str) -> str:
+    """Convert any string to a continuous binary string (UTF-8, no spaces)."""
+    utf8_bytes = text.encode("utf-8")
+    bits = ''.join(f'{byte:08b}' for byte in utf8_bytes)
+    return bits
+
+def encrypt_message(text: str, base: int = 16) -> str:
+    """
+    Encrypt text to a base representation.
+    Process:
+        text → UTF-8 bytes → binary string → integer → base-N string.
+    """
+    if not text:
+        return ""
+    bits = text_to_binary_string(text)
+    # Convert the binary string to a large integer
+    big_int = int(bits, 2)
+    # Convert that integer to the desired base (uppercase)
+    if base == 16:
+        return hex(big_int)[2:].upper()   # remove '0x'
+    else:
+        # Custom base conversion (supports 2-36 with default alphabet)
+        alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        if base > len(alphabet):
+            raise ValueError(f"Base {base} not supported with default alphabet")
+        if big_int == 0:
+            return "0"
+        digits = []
+        while big_int:
+            big_int, rem = divmod(big_int, base)
+            digits.append(alphabet[rem])
+        return ''.join(reversed(digits))
 
 def main():
     start_time = time.time()
@@ -76,10 +113,10 @@ def main():
     else:
         print("Warning: getMe failed, continuing.", flush=True)
 
-    # Send startup ping
-    send_message("b0JWE2R0cIy0e6f15e772458eede5497", "Echo bot is online. Reply to me!")
+    # Startup ping
+    send_message("b0JWE2R0cIy0e6f15e772458eede5497", "Encryption bot online. Send me any text.")
 
-    # Load previous offset, or fetch latest if none
+    # Load offset
     next_offset = read_offset()
     if not next_offset:
         code, data = api_call("getUpdates", {"limit": 1})
@@ -87,10 +124,10 @@ def main():
             next_offset = data.get("data", {}).get("next_offset_id")
             print(f"No saved offset. Starting from: {next_offset}", flush=True)
         else:
-            print("Could not get initial offset, starting without.", flush=True)
+            print("Could not get initial offset.", flush=True)
             next_offset = None
 
-    print("Polling for messages...", flush=True)
+    print(f"Polling every {POLL_INTERVAL}s. Output base: {BASE_OUT}", flush=True)
 
     try:
         while time.time() - start_time < RUN_DURATION:
@@ -115,12 +152,17 @@ def main():
                         text = msg.get("text", "")
                         chat_id = upd.get("chat_id")
                         if text and chat_id:
-                            send_message(chat_id, text)
+                            # Encrypt and send
+                            try:
+                                encrypted = encrypt_message(text, BASE_OUT)
+                                send_message(chat_id, encrypted)
+                            except Exception as e:
+                                print(f"Encryption error: {e}", flush=True)
+                                send_message(chat_id, "⚠️ Encryption failed.")
 
                 if new_offset:
                     next_offset = new_offset
-                    # Save periodically to reduce risk of data loss
-                    # (We'll also save at exit)
+                    write_offset(next_offset)   # save after every poll
             else:
                 print(f"[Poll] getUpdates error: {code} {data}", flush=True)
                 time.sleep(5)
@@ -130,7 +172,6 @@ def main():
             sleep_time = max(0, min(POLL_INTERVAL, RUN_DURATION - elapsed))
             time.sleep(sleep_time)
     finally:
-        # Always save the offset before exiting (even on error)
         if next_offset:
             write_offset(next_offset)
         print("Bot shutting down.", flush=True)
