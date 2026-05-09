@@ -4,112 +4,112 @@ import requests
 import traceback
 
 # --- Configuration ---
-TOKEN = os.environ.get("RUBIKA_TOKEN", "")
+TOKEN = os.environ.get("RUBIKA_TOKEN", "").strip()
 if not TOKEN:
-    print("FATAL: RUBIKA_TOKEN environment variable is empty or not set.", flush=True)
+    print("FATAL: RUBIKA_TOKEN is empty.", flush=True)
     exit(1)
 
-MESSAGE_POLL_INTERVAL = 3          # seconds between getUpdates calls
-RUN_DURATION = 5 * 3600 + 55 * 60  # 5 hours 55 minutes
+POLL_INTERVAL = 3                 # seconds between getUpdates calls
+RUN_DURATION = 5 * 3600 + 55 * 60 # 5h 55m
 
 PROXY_URL = os.environ.get("PROXY_URL")
 proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
 
-BASE_URL = f"https://botapi.rubika.ir/v3/{TOKEN}"
-# ---------------------
+BASE = f"https://botapi.rubika.ir/v3/{TOKEN}"
 
-def get_me():
-    """Return bot info dict or None on failure."""
-    try:
-        url = f"{BASE_URL}/getMe"
-        print(f"DEBUG getMe URL: {url[:50]}...", flush=True)
-        resp = requests.post(url, proxies=proxies, timeout=10)
-        print(f"DEBUG getMe status: {resp.status_code}", flush=True)
-        if resp.status_code == 200:
-            return resp.json().get("bot", {})
-        else:
-            print(f"getMe non-200: {resp.text}", flush=True)
-    except Exception as e:
-        print(f"getMe exception: {e}", flush=True)
+# --- Helper functions ---
+def safe_post(url, json_data=None, retries=2, timeout=10):
+    """Wrapper with retries."""
+    for attempt in range(retries + 1):
+        try:
+            if json_data is not None:
+                resp = requests.post(url, json=json_data, proxies=proxies, timeout=timeout)
+            else:
+                resp = requests.post(url, proxies=proxies, timeout=timeout)
+            if resp.status_code == 200:
+                return resp
+            print(f"[Attempt {attempt+1}] Status {resp.status_code}: {resp.text[:200]}", flush=True)
+        except Exception as e:
+            print(f"[Attempt {attempt+1}] Exception: {e}", flush=True)
+        if attempt < retries:
+            time.sleep(2)
     return None
 
-def get_updates(offset_id: str | None = None, limit: int = 10) -> dict | None:
+def get_me():
+    """Fetch bot info (tolerant to failure)."""
+    resp = safe_post(f"{BASE}/getMe")
+    if resp:
+        return resp.json().get("bot", {})
+    return {}
+
+def get_updates(offset_id=None, limit=10):
     payload = {"limit": limit}
     if offset_id is not None:
         payload["offset_id"] = offset_id
-    try:
-        resp = requests.post(f"{BASE_URL}/getUpdates", json=payload, proxies=proxies, timeout=10)
-        if resp.status_code == 200:
-            return resp.json()
-        else:
-            print(f"getUpdates error {resp.status_code}: {resp.text}", flush=True)
-    except Exception:
-        print(f"getUpdates exception: {traceback.format_exc()}", flush=True)
+    resp = safe_post(f"{BASE}/getUpdates", json_data=payload)
+    if resp:
+        return resp.json()
     return None
 
-def send_message(chat_id: str, text: str) -> bool:
+def send_message(chat_id, text):
     payload = {"chat_id": chat_id, "text": text}
-    try:
-        resp = requests.post(f"{BASE_URL}/sendMessage", json=payload, proxies=proxies, timeout=15)
-        if resp.status_code == 200:
-            print(f"[OK] Echo → {chat_id}: {text}", flush=True)
-            return True
-        else:
-            print(f"[FAIL] sendMessage {resp.status_code}: {resp.text}", flush=True)
-    except Exception:
-        print(f"sendMessage exception: {traceback.format_exc()}", flush=True)
-    return False
+    resp = safe_post(f"{BASE}/sendMessage", json_data=payload, timeout=15)
+    if resp:
+        print(f"[OK] Echo to {chat_id}: {text}", flush=True)
+        return True
+    else:
+        print(f"[FAIL] sendMessage failed.", flush=True)
+        return False
 
+# --- Main ---
 def main():
     start_time = time.time()
-    print(f"Bot starting. Token prefix: {TOKEN[:4]}... suffix: ...{TOKEN[-4:]}", flush=True)
+    print(f"Bot starting. Token prefix: {TOKEN[:6]}... suffix: ...{TOKEN[-4:]}", flush=True)
 
-    # Verify token
+    # Try getMe, but continue anyway
     bot_info = get_me()
-    if not bot_info:
-        print("FATAL: getMe failed. Check token, network, or proxy.", flush=True)
-        return
+    if bot_info:
+        # FIXED: removed extra parenthesis after '?'  → now valid f-string
+        print(f"Bot is alive: {bot_info.get('bot_title', 'Unknown')} (@{bot_info.get('username', '?')})", flush=True)
+    else:
+        print("WARNING: getMe failed. Will still attempt to poll and reply.", flush=True)
 
-    bot_id = bot_info.get("bot_id", "")
-    print(f"Bot online: {bot_info.get('bot_title', 'Unknown')} (@{bot_info.get('username', '?'))}", flush=True)
-
-    # Skip old messages
+    # Skip old messages (get latest offset)
     initial = get_updates(limit=1)
     next_offset = initial.get("next_offset_id") if initial else None
-    print(f"Start offset: {next_offset}. Polling every {MESSAGE_POLL_INTERVAL}s.", flush=True)
+    print(f"Start offset: {next_offset}. Polling every {POLL_INTERVAL}s.", flush=True)
 
-    # Main loop
     while time.time() - start_time < RUN_DURATION:
         data = get_updates(offset_id=next_offset, limit=10)
         if data:
             updates = data.get("updates", [])
             new_offset = data.get("next_offset_id")
             if updates:
-                print(f"Got {len(updates)} updates.", flush=True)
+                print(f"Received {len(updates)} update(s).", flush=True)
             for upd in updates:
                 if upd.get("type") != "NewMessage":
                     continue
                 msg = upd.get("new_message", {})
-                sender_id = msg.get("sender_id")
+                sender_type = msg.get("sender_type")     # "User" or "Bot"
                 text = msg.get("text", "")
                 chat_id = upd.get("chat_id")
 
-                if sender_id == bot_id or not text or not chat_id:
-                    continue
-                # Echo the message
-                send_message(chat_id, text)
+                # Only reply to users, ignore bots (including self)
+                if sender_type == "User" and text and chat_id:
+                    send_message(chat_id, text)
 
             if new_offset:
                 next_offset = new_offset
         else:
+            # getUpdates failed, wait a bit longer
             time.sleep(5)
             continue
 
         elapsed = time.time() - start_time
-        remain = max(0, RUN_DURATION - elapsed)
-        time.sleep(min(MESSAGE_POLL_INTERVAL, remain))
+        sleep_time = min(POLL_INTERVAL, max(0, RUN_DURATION - elapsed))
+        time.sleep(sleep_time)
 
-    print("Run duration ended. Shutting down.", flush=True)
+    print("Time limit reached. Exiting.", flush=True)
 
 if __name__ == "__main__":
     main()
